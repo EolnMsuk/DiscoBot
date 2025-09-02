@@ -258,4 +258,5 @@ class BotHelper:
         embed.add_field(name="👤 User Commands", value=user_commands, inline=False)
         embed.add_field(name="🛡️ Admin Commands", value=admin_commands, inline=False)
         embed.add_field(name="👑 Owner Commands", value=owner_commands, inline=False)
+
         await ctx.send(embed=embed)
