@@ -1,0 +1,31 @@
+# requirements.txt
+
+# Core Discord library
+discord.py
+
+# Required for voice functionality in discord.py
+PyNaCl
+
+# Browser automation for Omegle
+selenium
+
+# For streaming audio from YouTube and other sites
+yt-dlp
+
+# Spotify API interaction
+spotipy
+
+# Reading metadata (artist, title) from local audio files
+mutagen
+
+# Advanced, feature-rich logging
+loguru
+
+# For loading credentials and config from a .env file
+python-dotenv
+
+# For listening to global hotkeys
+keyboard
+
+# For auto typing the interests out
+pyautogui
