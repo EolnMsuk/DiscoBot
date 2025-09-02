@@ -3,6 +3,7 @@ import asyncio
 import sys
 import time
 from dataclasses import dataclass, field
+from functools import wraps
 from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
 import discord
@@ -19,14 +20,18 @@ def handle_errors(func: Any) -> Any:
     @wraps(func)
     async def wrapper(*args, **kwargs):
         ctx = None
-        if args and isinstance(args[0], (commands.Context, discord.Interaction)):
-            ctx = args[0]
+        # Find the context object in the arguments, which could be the first or second argument
+        if args:
+            if isinstance(args[0], (commands.Context, discord.Interaction)):
+                ctx = args[0]
+            elif len(args) > 1 and isinstance(args[1], (commands.Context, discord.Interaction)):
+                ctx = args[1]
         try:
             return await func(*args, **kwargs)
         except Exception as e:
             logger.error(f"Error in {func.__name__}: {e}", exc_info=True)
             if ctx and hasattr(ctx, "send"):
-                try: await ctx.send("An unexpected error occurred.")
+                try: await ctx.send("An unexpected error occurred. Please check the logs.", delete_after=15)
                 except Exception as send_e: logger.error(f"Failed to send error message: {send_e}")
     return wrapper
 
@@ -41,19 +46,18 @@ def record_command_usage(analytics: Dict[str, Any], command_name: str) -> None:
 
 def record_command_usage_by_user(analytics: Dict[str, Any], user_id: int, command_name: str) -> None:
     if command_name not in ALLOWED_STATS_COMMANDS: return
-    if user_id not in analytics["command_usage_by_user"]: analytics["command_usage_by_user"][user_id] = {}
-    analytics["command_usage_by_user"][user_id][command_name] = analytics["command_usage_by_user"][user_id].get(command_name, 0) + 1
+    user_id_str = str(user_id) # JSON keys must be strings
+    if user_id_str not in analytics["command_usage_by_user"]: analytics["command_usage_by_user"][user_id_str] = {}
+    analytics["command_usage_by_user"][user_id_str][command_name] = analytics["command_usage_by_user"][user_id_str].get(command_name, 0) + 1
 
 @dataclass
 class BotConfig:
     """Holds all configuration variables for the music bot."""
     # Required Settings
     GUILD_ID: int
-    MUSIC_CONTROL_CHANNEL_ID: int
-    STREAMING_VC_ID: int
 
     # Optional Settings
-    ALT_VC_ID: List[int]
+    MUSIC_CONTROL_CHANNEL_ID: Optional[int]
     ALLOWED_USERS: Set[int]
     ADMIN_ROLE_NAME: List[str]
     COMMAND_COOLDOWN: int
@@ -82,26 +86,26 @@ class BotConfig:
         return BotConfig(
             # Required
             GUILD_ID=getattr(config_module, 'GUILD_ID', None),
-            MUSIC_CONTROL_CHANNEL_ID=getattr(config_module, 'MUSIC_CONTROL_CHANNEL_ID', None),
-            STREAMING_VC_ID=getattr(config_module, 'STREAMING_VC_ID', None),
+            
             # Optional
-            ALT_VC_ID=getattr(config_module, 'ALT_VC_ID', []),
-            ALLOWED_USERS=getattr(config_module, 'ALLOWED_USERS', set()),
+            MUSIC_CONTROL_CHANNEL_ID=getattr(config_module, 'MUSIC_CONTROL_CHANNEL_ID', None),
+            ALLOWED_USERS=set(getattr(config_module, 'ALLOWED_USERS', [])),
             ADMIN_ROLE_NAME=getattr(config_module, 'ADMIN_ROLE_NAME', []),
             COMMAND_COOLDOWN=getattr(config_module, 'COMMAND_COOLDOWN', 5),
-            STATS_EXCLUDED_USERS=getattr(config_module, 'STATS_EXCLUDED_USERS', set()),
+            STATS_EXCLUDED_USERS=set(getattr(config_module, 'STATS_EXCLUDED_USERS', [])),
+            
             # Music
-            MUSIC_ENABLED=getattr(config_module, 'MUSIC_ENABLED', False),
+            MUSIC_ENABLED=getattr(config_module, 'MUSIC_ENABLED', True),
             MUSIC_LOCATION=getattr(config_module, 'MUSIC_LOCATION', None),
             MUSIC_BOT_VOLUME=getattr(config_module, 'MUSIC_BOT_VOLUME', 0.2),
             MUSIC_MAX_VOLUME=getattr(config_module, 'MUSIC_MAX_VOLUME', 1.0),
             MUSIC_SUPPORTED_FORMATS=getattr(config_module, 'MUSIC_SUPPORTED_FORMATS', ('.mp3', '.flac', '.wav', '.ogg', '.m4a')),
-            MUSIC_DEFAULT_ANNOUNCE_SONGS=getattr(config_module, 'MUSIC_DEFAULT_ANNOUNCE_SONGS', False),
+            MUSIC_DEFAULT_ANNOUNCE_SONGS=getattr(config_module, 'MUSIC_DEFAULT_ANNOUNCE_SONGS', True),
             NORMALIZE_LOCAL_MUSIC=getattr(config_module, 'NORMALIZE_LOCAL_MUSIC', True),
             ENABLE_GLOBAL_MSKIP=getattr(config_module, 'ENABLE_GLOBAL_MSKIP', False),
-            GLOBAL_HOTKEY_MSKIP=getattr(config_module, 'GLOBAL_HOTKEY_MSKIP', 'grave'),
+            GLOBAL_HOTKEY_MSKIP=getattr(config_module, 'GLOBAL_HOTKEY_MSKIP', '`'),
             ENABLE_GLOBAL_MPAUSE=getattr(config_module, 'ENABLE_GLOBAL_MPAUSE', False),
-            GLOBAL_HOTKEY_MPAUSE=getattr(config_module, 'GLOBAL_HOTKEY_MPAUSE', 'grave'),
+            GLOBAL_HOTKEY_MPAUSE=getattr(config_module, 'GLOBAL_HOTKEY_MPAUSE', 'pause'),
             ENABLE_GLOBAL_MVOLUP=getattr(config_module, 'ENABLE_GLOBAL_MVOLUP', False),
             GLOBAL_HOTKEY_MVOLUP=getattr(config_module, 'GLOBAL_HOTKEY_MVOLUP', ']'),
             ENABLE_GLOBAL_MVOLDOWN=getattr(config_module, 'ENABLE_GLOBAL_MVOLDOWN', False),
@@ -110,7 +114,7 @@ class BotConfig:
 
 # Type Aliases for BotState clarity
 Cooldowns = Dict[int, Tuple[float, bool]]
-AnalyticsData = Dict[str, Union[Dict[str, int], Dict[int, Dict[str, int]]]]
+AnalyticsData = Dict[str, Union[Dict[str, int], Dict[str, Dict[str, int]]]]
 Playlists = Dict[str, List[Dict[str, Any]]]
 
 @dataclass
@@ -157,7 +161,10 @@ class BotState:
     def to_dict(self) -> dict:
         """Serializes the bot's state into a JSON-compatible dictionary."""
         def clean_song_dict(song: Optional[Dict]) -> Optional[Dict]:
-            return {k: v for k, v in song.items() if k != 'ctx'} if song else None
+            if not song: return None
+            # Exclude the 'ctx' object which cannot be serialized to JSON
+            return {k: v for k, v in song.items() if k != 'ctx'}
+            
         return {
             "analytics": self.analytics,
             "disabled_users": list(self.disabled_users),
@@ -175,8 +182,8 @@ class BotState:
         """Deserializes a dictionary into a BotState object."""
         state = cls(config=config)
         analytics = data.get("analytics", {"command_usage": {}, "command_usage_by_user": {}})
-        if "command_usage_by_user" in analytics:
-            analytics["command_usage_by_user"] = {int(k): v for k, v in analytics.get("command_usage_by_user", {}).items()}
+        # Ensure user IDs in analytics are strings for consistency
+        analytics["command_usage_by_user"] = {str(k): v for k, v in analytics.get("command_usage_by_user", {}).items()}
         state.analytics = analytics
         state.disabled_users = set(data.get("disabled_users", []))
         # Music state
