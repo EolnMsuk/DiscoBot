@@ -1,6 +1,3 @@
-# readme.py
-
-readme_content = """
 # SkipCord-Music: A Powerful Music Bot for Discord
 
 SkipCord-Music is a feature-rich, high-performance Discord music bot designed for a seamless listening experience. It allows users to play music from multiple sources, manage an interactive queue, and save persistent playlists. The bot features intuitive button controls, global hotkey support, and a fully asynchronous architecture for rock-solid stability.
