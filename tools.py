@@ -195,3 +195,4 @@ class BotState:
         state.music_volume = data.get("music_volume", config.MUSIC_BOT_VOLUME if config else 0.2)
         state.playlists = data.get("playlists", {})
         return state
+
