@@ -120,12 +120,12 @@ ALT_VC_ID = []  # A list of additional VCs the bot can play music in
 STATS_EXCLUDED_USERS = {123456789012345678} # User IDs to exclude from stats
 
 # --- MUSIC BOT SETTINGS ---
-MUSIC_ENABLED = True                 # Master toggle for all music features
+MUSIC_ENABLED = True                       # Master toggle for all music features
 MUSIC_LOCATION = "C:/Users/YourUser/Music" # Path to local music files (or None to disable)
-MUSIC_BOT_VOLUME = 0.2               # Default volume (0.0 to 1.0)
-MUSIC_MAX_VOLUME = 1.0               # Max volume for the !vol command (1.0 = 100%)
-NORMALIZE_LOCAL_MUSIC = True         # Apply volume normalization to local files
-MUSIC_DEFAULT_ANNOUNCE_SONGS = False # Announce every new song in chat
+MUSIC_BOT_VOLUME = 0.2                     # Default volume (0.0 to 1.0)
+MUSIC_MAX_VOLUME = 1.0                     # Max volume for the !vol command (1.0 = 100%)
+NORMALIZE_LOCAL_MUSIC = True               # Apply volume normalization to local files
+MUSIC_DEFAULT_ANNOUNCE_SONGS = False       # Announce every new song in chat
 MUSIC_SUPPORTED_FORMATS = ('.mp3', '.flac', '.wav', '.ogg', '.m4a')
 
 # --- GLOBAL HOTKEYS ---
