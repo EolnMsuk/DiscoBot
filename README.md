@@ -1,2 +1,158 @@
-# DiscoBot
-A Discord Music bot, works with spotify, youtube, soundcloud and local music. Includes a panel.
+# DiscoBot: A Powerful Music Bot for Discord
+
+[cite_start]DiscoBot is a feature-rich, high-performance Discord music bot designed for a seamless listening experience[cite: 1]. [cite_start]It allows users to play music from multiple sources, manage an interactive queue, and save persistent playlists[cite: 1]. [cite_start]The bot features intuitive button controls, global hotkey support, and a fully asynchronous architecture for rock-solid stability[cite: 1].
+
+[Key Features](#-key-features) -> [Command List](#-command-list) -> [How to Setup](#️-setup--configuration)
+
+-----
+
+## ✨ Key Features
+
+### 🎵 Integrated Music System
+
+* [cite_start]**Versatile Playback**: Search and play songs, albums, or playlists from **YouTube**, **Spotify**, or local files on the host machine[cite: 1].
+* [cite_start]**Interactive Queue**: View the song queue with the `!q` command and instantly jump to any song using a convenient dropdown menu[cite: 1].
+* [cite_start]**Persistent Playlists**: Save the current queue as a named playlist, then load, list, or delete your custom playlists at any time[cite: 1]. [cite_start]All playlists are saved and reloaded on bot restart[cite: 1].
+* [cite_start]**Multiple Playback Modes**: Effortlessly cycle between **Shuffle**, **Alphabetical**, and **Loop** modes to fit any mood[cite: 1].
+* **Intuitive Button Menus**: Control playback (`!mpauseplay`, `!mskip`) using a clean, persistent button menu that automatically refreshes in your music command channel.
+* [cite_start]**Automatic Management**: The bot intelligently joins the voice channel when users are present and leaves when it's empty to conserve resources[cite: 1].
+
+### 🎧 High-Performance Audio & Control
+
+* [cite_start]**Global Hotkeys**: Configure system-wide keyboard shortcuts to trigger commands like `!mskip`, `!mpauseplay`, and volume controls from anywhere on the host machine, even when Discord isn't focused[cite: 1].
+* **Audio Normalization**: Optional loudness normalization for local music files ensures a consistent volume level between your personal library and online streams.
+* [cite_start]**Persistent State**: The bot's current queue, playlists, and settings are saved to `data.json`, ensuring your session is restored after a restart[cite: 1].
+* [cite_start]**Detailed Logging**: Utilizes `loguru` for detailed, color-coded logs of all commands and player activity, saved to `bot.log` for easy troubleshooting[cite: 1].
+
+-----
+
+## 📋 Command List
+
+### 👤 User Commands
+
+* [cite_start]`!m` / `!msearch <query>`: Searches for a song, playlist, or URL to add to the queue[cite: 1].
+* [cite_start]`!q` / `!queue`: Displays the interactive song queue with a dropdown menu to jump to tracks[cite: 1].
+* [cite_start]`!np` / `!nowplaying`: Shows the currently playing song[cite: 1].
+* [cite_start]`!mskip`: Skips the current song and plays the next one in the queue[cite: 1].
+* [cite_start]`!mpp` / `!mpauseplay`: Toggles between playing and pausing the music[cite: 1].
+* [cite_start]`!mclear`: Prompts to clear all songs from the search queue and stop playback[cite: 1].
+* [cite_start]`!mshuffle`: Cycles the playback mode between **Shuffle**, **Alphabetical**, and **Loop**[cite: 1].
+* [cite_start]`!vol` / `!volume <0-100>`: Sets the music volume as a percentage[cite: 1].
+* [cite_start]`!playlist <save|load|list|delete> [name]`: Manages your saved playlists[cite: 1].
+
+### 🛡️ Admin Commands
+
+*(Requires Admin Role or being an Allowed User)*
+
+* [cite_start]`!music`: Sends the interactive music control menu to the command channel[cite: 1].
+* [cite_start]`!mon`: Enables all music features and connects the bot to the voice channel[cite: 1].
+* [cite_start]`!moff`: Disables all music features, clears the queue, and disconnects the bot[cite: 1].
+* [cite_start]`!commands`: Shows this list of all available commands[cite: 1].
+
+### 👑 Owner Commands (Allowed Users Only)
+
+* [cite_start]`!disable <user>`: Prevents a specified user from using any bot commands[cite: 1].
+* [cite_start]`!enable <user>`: Re-enables a disabled user, allowing them to use commands again[cite: 1].
+* [cite_start]`!shutdown`: Safely saves the current state and shuts down the bot[cite: 1].
+
+-----
+
+## ⚙️ Setup & Configuration
+
+### 1. Prerequisites
+
+* [cite_start]**Python 3.9+**[cite: 1].
+* [cite_start]**FFmpeg**: Required for audio playback[cite: 1].
+* [cite_start]**Dependencies**: Open a terminal or command prompt and run the following command to install the required Python libraries[cite: 1]:
+    ```bash
+    pip install discord.py PyNaCl loguru python-dotenv keyboard mutagen yt-dlp spotipy
+    ```
+
+### 2. Create a Discord Bot
+
+1.  [cite_start]Go to the [Discord Developer Portal](https://discord.com/developers/applications) and create a **New Application**[cite: 1].
+2.  [cite_start]Navigate to the **"Bot"** tab and enable the following **Privileged Gateway Intents**[cite: 1]:
+    * [cite_start]✅ **Message Content Intent** [cite: 1]
+    * [cite_start]✅ **Server Members Intent** [cite: 1]
+3.  Click **"Reset Token"** to get your bot's token. [cite_start]**Copy and save this token securely**[cite: 1].
+4.  Go to **"OAuth2" -> "URL Generator"**. [cite_start]Select the `bot` and `applications.commands` scopes[cite: 1].
+5.  [cite_start]Under "Bot Permissions," select `Administrator`[cite: 1].
+6.  [cite_start]Copy the generated URL and use it to invite the bot to your Discord server[cite: 1].
+
+### 3. Set up Spotify API (Optional)
+
+[cite_start]To play songs from Spotify links, you need API credentials[cite: 1].
+
+1.  [cite_start]Go to the [Spotify Developer Dashboard](https://developer.spotify.com/dashboard/) and create a new app[cite: 1].
+2.  [cite_start]Give it a name and description[cite: 1].
+3.  [cite_start]Once created, copy your **Client ID** and **Client Secret**[cite: 1].
+
+### 4. File Setup
+
+1.  [cite_start]Create a folder for your bot and place `bot.py`, `helper.py`, and `tools.py` inside[cite: 1].
+2.  [cite_start]In the same folder, create a new file named `.env`[cite: 1].
+3.  Open the `.env` file and add your credentials. [cite_start]Replace the placeholder text with your actual tokens[cite: 1].
+
+    ```env
+    # .env file
+    BOT_TOKEN=YOUR_DISCORD_BOT_TOKEN_HERE
+    SPOTIPY_CLIENT_ID=YOUR_SPOTIFY_CLIENT_ID_HERE
+    SPOTIPY_CLIENT_SECRET=YOUR_SPOTIFY_CLIENT_SECRET_HERE
+    ```
+    > **Note:** `BOT_TOKEN` is required. [cite_start]The `SPOTIPY` lines are optional if you don't need Spotify integration[cite: 1].
+
+### 5. Configure `config.py`
+
+[cite_start]Open `config.py` and fill in the values with your server's specific IDs and your preferences[cite: 1]. [cite_start]To get IDs, enable Developer Mode in Discord, then right-click a server, channel, or user and select "Copy ID." [cite: 1]
+
+```python
+# --- REQUIRED SETTINGS ---
+GUILD_ID = 123456789012345678                # Your Discord Server ID
+MUSIC_CONTROL_CHANNEL_ID = 123456789012345678 # Channel for music commands and menus
+STREAMING_VC_ID = 123456789012345678         # Voice channel for music playback
+
+# --- PERMISSIONS ---
+ALLOWED_USERS = {123456789012345678} # User IDs with full bot owner access
+ADMIN_ROLE_NAME = ["Admin", "Moderator"] # Roles that can use admin commands
+
+# --- OPTIONAL ---
+ALT_VC_ID = []  # A list of additional VCs the bot can play music in
+STATS_EXCLUDED_USERS = {123456789012345678} # User IDs to exclude from stats
+
+# --- MUSIC BOT SETTINGS ---
+MUSIC_ENABLED = True                 # Master toggle for all music features
+MUSIC_LOCATION = "C:/Users/YourUser/Music" # Path to local music files (or None to disable)
+MUSIC_BOT_VOLUME = 0.2               # Default volume (0.0 to 1.0)
+MUSIC_MAX_VOLUME = 1.0               # Max volume for the !vol command (1.0 = 100%)
+NORMALIZE_LOCAL_MUSIC = True         # Apply volume normalization to local files
+MUSIC_DEFAULT_ANNOUNCE_SONGS = False # Announce every new song in chat
+MUSIC_SUPPORTED_FORMATS = ('.mp3', '.flac', '.wav', '.ogg', '.m4a')
+
+# --- GLOBAL HOTKEYS ---
+ENABLE_GLOBAL_MSKIP = True
+GLOBAL_HOTKEY_MSKIP = 'end'
+ENABLE_GLOBAL_MPAUSE = True
+GLOBAL_HOTKEY_MPAUSE = 'page down'
+ENABLE_GLOBAL_MVOLUP = True
+GLOBAL_HOTKEY_MVOLUP = ']'
+ENABLE_GLOBAL_MVOLDOWN = True
+GLOBAL_HOTKEY_MVOLDOWN = '['
+````
+
+-----
+
+## Running the Bot
+
+1.  [cite\_start]Open your command prompt or terminal[cite: 1].
+2.  [cite\_start]Navigate to the bot's folder using `cd path/to/your/bot`[cite: 1].
+3.  [cite\_start]Run the bot with the command[cite: 1]:
+    ```bash
+    python bot.py
+    ```
+
+### Troubleshooting
+
+  * [cite\_start]**Token Error**: Make sure your `.env` file is in the same folder as `bot.py` and contains the correct token[cite: 1].
+  * [cite\_start]**Music Doesn't Play**: Ensure **FFmpeg** is installed and its folder is added to your system's PATH[cite: 1].
+  * [cite\_start]**Spotify Links Fail**: Double-check your `SPOTIPY_CLIENT_ID` and `SPOTIPY_CLIENT_SECRET` in the `.env` file[cite: 1].
+  * [cite\_start]**Other Issues**: Check the `bot.log` file in the bot's folder for detailed error messages[cite: 1].
