@@ -61,9 +61,7 @@ except Exception as e:
 bot_config = BotConfig.from_config_module(config)
 
 # Validate that all essential configuration variables have been set
-required_settings = [
-    'GUILD_ID', 'MUSIC_CONTROL_CHANNEL_ID', 'STREAMING_VC_ID'
-]
+required_settings = ['GUILD_ID']
 missing_settings = [
     setting for setting in required_settings if not getattr(bot_config, setting)
 ]
@@ -80,6 +78,7 @@ state = BotState(config=bot_config)
 intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
+intents.voice_states = True # Required for voice state updates
 bot = commands.Bot(command_prefix="!", help_command=None, intents=intents)
 bot.state = state
 bot.voice_client_music = None
@@ -166,7 +165,7 @@ async def load_state_async() -> None:
         helper.state = state
 
 # Initialize the helper class
-helper = BotHelper(bot, state, bot_config, save_state_async, lambda: asyncio.create_task(play_next_song()))
+helper = BotHelper(bot, state, bot_config, save_state_async, lambda ctx=None: asyncio.create_task(play_next_song(ctx=ctx)))
 
 
 @tasks.loop(minutes=14)
@@ -229,30 +228,37 @@ async def global_mvoldown() -> None:
 # Music Core Logic
 #########################################
 
-async def ensure_voice_connection() -> bool:
-    """Ensures the bot is connected to the correct voice channel."""
+async def ensure_voice_connection(ctx: commands.Context) -> bool:
+    """Ensures the bot is connected to the author's voice channel."""
     if not state.music_enabled: return False
 
-    guild = bot.get_guild(bot_config.GUILD_ID)
-    if not guild: return False
-        
-    streaming_vc = guild.get_channel(bot_config.STREAMING_VC_ID)
-    if not streaming_vc or not isinstance(streaming_vc, discord.VoiceChannel): return False
-
-    current_vc = guild.voice_client
-    if current_vc and current_vc.is_connected() and current_vc.channel == streaming_vc:
-        bot.voice_client_music = current_vc
-        return True
-
-    logger.info(f"Ensuring connection to voice channel: {streaming_vc.name}...")
-    try:
-        bot.voice_client_music = await streaming_vc.connect(reconnect=True, timeout=60.0)
-        logger.info(f"Successfully connected/moved to {streaming_vc.name}.")
-        return True
-    except Exception as e:
-        logger.error(f"An unexpected error occurred while connecting to {streaming_vc.name}: {e}", exc_info=True)
-        bot.voice_client_music = None
+    if not ctx.author.voice or not ctx.author.voice.channel:
+        await ctx.send("You need to be in a voice channel to use music commands.", delete_after=10)
         return False
+
+    voice_channel = ctx.author.voice.channel
+
+    if not bot.voice_client_music or not bot.voice_client_music.is_connected():
+        logger.info(f"Connecting to voice channel: {voice_channel.name}...")
+        try:
+            bot.voice_client_music = await voice_channel.connect(reconnect=True, timeout=60.0)
+            return True
+        except Exception as e:
+            logger.error(f"Failed to connect to {voice_channel.name}: {e}", exc_info=True)
+            await ctx.send("❌ Failed to connect to your voice channel.")
+            bot.voice_client_music = None
+            return False
+    elif bot.voice_client_music.channel != voice_channel:
+        logger.info(f"Moving to voice channel: {voice_channel.name}...")
+        try:
+            await bot.voice_client_music.move_to(voice_channel)
+            return True
+        except Exception as e:
+            logger.error(f"Failed to move to {voice_channel.name}: {e}", exc_info=True)
+            await ctx.send("❌ Failed to move to your voice channel.")
+            return False
+    
+    return True # Already in the correct channel
 
 async def scan_and_shuffle_music() -> int:
     """Scans the music directory, caches metadata, and shuffles the queue."""
@@ -309,14 +315,15 @@ async def scan_and_shuffle_music() -> int:
         
     return len(state.shuffle_queue)
 
-async def _play_song(song_info: dict, ctx: Optional[commands.Context] = None):
+async def _play_song(song_info: dict, ctx: commands.Context):
     """Internal function to handle the actual playback of a song."""
     async with state.music_lock: state.is_processing_song = True
     if not state.music_enabled:
         async with state.music_lock: state.is_music_playing, state.current_song, state.is_processing_song = False, None, False
         return
-    if not bot.voice_client_music or not bot.voice_client_music.is_connected():
-        logger.error("Playback failed: Bot not connected to VC.")
+        
+    if not await ensure_voice_connection(ctx):
+        logger.error("Playback failed: Bot could not ensure voice connection.")
         async with state.music_lock: state.is_music_playing, state.current_song, state.is_processing_song = False, None, False
         return
 
@@ -339,7 +346,10 @@ async def _play_song(song_info: dict, ctx: Optional[commands.Context] = None):
             options = FFMPEG_OPTIONS if state.config.NORMALIZE_LOCAL_MUSIC else {'options': '-vn -loglevel error'}
             source = discord.PCMVolumeTransformer(discord.FFmpegPCMAudio(song_path_or_url, **options), volume=volume)
 
-        bot.voice_client_music.play(source, after=lambda e: asyncio.run_coroutine_threadsafe(play_next_song(e), bot.loop))
+        # The context for the 'after' callback needs to be passed through
+        after_callback = lambda e: asyncio.run_coroutine_threadsafe(play_next_song(error=e, ctx=ctx), bot.loop)
+        bot.voice_client_music.play(source, after=after_callback)
+
         logger.info(f"Now playing: {song_display_name}")
         await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.listening, name=song_display_name))
 
@@ -349,31 +359,31 @@ async def _play_song(song_info: dict, ctx: Optional[commands.Context] = None):
                 announcement_ctx = state.announcement_context
                 state.announcement_context = None
         
-        if announcement_ctx:
-            await announcement_ctx.send(f"🎵 Now Playing: **{song_display_name}**")
-        elif bot_config.MUSIC_DEFAULT_ANNOUNCE_SONGS and ctx:
-            await ctx.send(f"🎵 Now Playing: **{song_display_name}**")
+        # Use the context from the song if available, otherwise use the passed context
+        effective_ctx = announcement_ctx or ctx
+        if effective_ctx and bot_config.MUSIC_DEFAULT_ANNOUNCE_SONGS:
+             await effective_ctx.send(f"🎵 Now Playing: **{song_display_name}**")
 
     except Exception as e:
         logger.critical("CRITICAL FAILURE IN _play_song.", exc_info=True)
         if ctx: await ctx.send(f"❌ **Playback Error:** Could not play `{song_info.get('title', 'Unknown')}`. Check logs.", delete_after=15)
         async with state.music_lock: state.is_music_playing, state.is_processing_song = False, False
 
-async def start_music_playback():
+async def start_music_playback(ctx: commands.Context):
     """A locked, centralized function to prevent race conditions when starting music."""
     if state.music_startup_lock.locked(): return
     async with state.music_startup_lock:
         if not state.music_enabled or (bot.voice_client_music and (bot.voice_client_music.is_playing() or bot.voice_client_music.is_paused())): return
-        if not await ensure_voice_connection():
+        if not await ensure_voice_connection(ctx):
             logger.error("Could not start music: failed to ensure voice connection.")
             return
         is_queue_empty = False
         async with state.music_lock:
              if not state.shuffle_queue: is_queue_empty = True
         if is_queue_empty: await scan_and_shuffle_music()
-        await play_next_song()
+        await play_next_song(ctx=ctx)
 
-async def play_next_song(error=None, is_recursive_call=False):
+async def play_next_song(error=None, is_recursive_call=False, ctx: Optional[commands.Context] = None):
     """The 'after' callback for the music player and state machine's gatekeeper."""
     if not state.music_enabled: return
     if error: logger.error(f"Error in music player callback: {error}")
@@ -389,12 +399,25 @@ async def play_next_song(error=None, is_recursive_call=False):
             await bot.change_presence(activity=None)
             return
 
-    if not await ensure_voice_connection():
+    # If ctx is not provided (from 'after' callback), we can't ensure connection, but we proceed
+    # because the bot should already be connected. If not, _play_song will fail gracefully.
+    if ctx and not await ensure_voice_connection(ctx):
         logger.critical("Music playback stopped: Could not establish a voice connection.")
         async with state.music_lock: state.is_music_playing, state.current_song = False, None
         return
 
     async with state.music_lock:
+        # Prioritize the context from a queued song, then the passed context
+        song_ctx = None
+        if state.search_queue: song_ctx = state.search_queue[0].get('ctx')
+        elif state.active_playlist: song_ctx = state.active_playlist[0].get('ctx')
+        effective_ctx = song_ctx or ctx
+
+        if not effective_ctx:
+            logger.warning("play_next_song called without a valid context. Music cannot start/continue.")
+            state.is_music_playing, state.current_song = False, None
+            return
+
         if state.music_mode == 'loop' and state.current_song: song_to_play_info = state.current_song
         elif state.search_queue: song_to_play_info = state.search_queue.pop(0)
         elif state.active_playlist: song_to_play_info = state.active_playlist.pop(0)
@@ -403,7 +426,7 @@ async def play_next_song(error=None, is_recursive_call=False):
                 if not state.shuffle_queue: needs_library_scan = True
                 else:
                     song_path = state.shuffle_queue.pop(0)
-                    song_to_play_info = {'path': song_path, 'title': get_display_title_from_path(song_path), 'is_stream': False}
+                    song_to_play_info = {'path': song_path, 'title': get_display_title_from_path(song_path), 'is_stream': False, 'ctx': effective_ctx}
             elif state.music_mode == 'alphabetical':
                 if not state.all_songs: needs_library_scan = True
                 else:
@@ -411,20 +434,25 @@ async def play_next_song(error=None, is_recursive_call=False):
                     try: next_index = (state.all_songs.index(last_path) + 1) % len(state.all_songs)
                     except (ValueError, AttributeError): next_index = 0
                     song_path = state.all_songs[next_index]
-                    song_to_play_info = {'path': song_path, 'title': get_display_title_from_path(song_path), 'is_stream': False}
+                    song_to_play_info = {'path': song_path, 'title': get_display_title_from_path(song_path), 'is_stream': False, 'ctx': effective_ctx}
 
     if needs_library_scan:
         if is_recursive_call:
             logger.error("Recursive call to play_next_song detected after failed scan. Halting.")
             return
         await scan_and_shuffle_music()
-        await play_next_song(is_recursive_call=True)
+        await play_next_song(is_recursive_call=True, ctx=ctx) # Pass context forward
         return
 
     if song_to_play_info:
+        # Ensure the song has a context to play with
+        song_ctx = song_to_play_info.get('ctx', ctx)
+        if not song_ctx:
+             logger.error("Cannot play song, context is missing.")
+             return
         async with state.music_lock:
             state.is_music_playing, state.is_music_paused, state.current_song = True, False, song_to_play_info
-        await _play_song(song_to_play_info, ctx=song_to_play_info.get('ctx'))
+        await _play_song(song_to_play_info, ctx=song_ctx)
     else:
         async with state.music_lock:
             state.is_music_playing, state.is_music_paused, state.current_song = False, False, None
@@ -443,7 +471,7 @@ def require_user_preconditions():
             if ctx.author.id in state.disabled_users:
                 await ctx.send("You are currently disabled from using any commands.", delete_after=10)
                 return False
-        if ctx.channel.id != bot_config.MUSIC_CONTROL_CHANNEL_ID:
+        if bot_config.MUSIC_CONTROL_CHANNEL_ID and ctx.channel.id != bot_config.MUSIC_CONTROL_CHANNEL_ID:
             await ctx.send(f"All music commands must be used in <#{bot_config.MUSIC_CONTROL_CHANNEL_ID}>.", delete_after=10)
             return False
         return True
@@ -462,7 +490,7 @@ def require_admin_preconditions():
             if ctx.author.id in state.disabled_users:
                 await ctx.send("You are currently disabled from using any commands.", delete_after=10)
                 return False
-        if ctx.channel.id != bot_config.MUSIC_CONTROL_CHANNEL_ID:
+        if bot_config.MUSIC_CONTROL_CHANNEL_ID and ctx.channel.id != bot_config.MUSIC_CONTROL_CHANNEL_ID:
             await ctx.send(f"All music commands must be used in <#{bot_config.MUSIC_CONTROL_CHANNEL_ID}>.", delete_after=10)
             return False
         return True
@@ -487,18 +515,6 @@ async def on_ready() -> None:
         await load_state_async()
         if not periodic_state_save.is_running(): periodic_state_save.start()
         if not periodic_menu_update.is_running(): periodic_menu_update.start()
-        if not music_playback_watchdog.is_running(): music_playback_watchdog.start()
-
-        if state.music_enabled:
-            logger.info("Music is enabled. Initializing...")
-            guild = bot.get_guild(bot_config.GUILD_ID)
-            if guild:
-                streaming_vc = guild.get_channel(bot_config.STREAMING_VC_ID)
-                if streaming_vc and any(m for m in streaming_vc.members if not m.bot):
-                     logger.info("Users detected in VC on startup, starting music.")
-                     asyncio.create_task(start_music_playback())
-        else:
-            logger.info("Music is disabled by config on startup.")
 
         async def register_hotkey(enabled_flag: bool, key_combo: str, callback_func: Callable, name: str):
             if not enabled_flag: return
@@ -526,45 +542,33 @@ async def on_message(message: discord.Message) -> None:
         return
     await bot.process_commands(message)
 
-async def manage_music_presence():
-    """Manages the bot's presence in the VC based on human listeners."""
-    if not state.music_enabled: return
-    await asyncio.sleep(1.5)
-    
-    guild = bot.get_guild(bot_config.GUILD_ID)
-    if not guild: return
-    streaming_vc = guild.get_channel(bot_config.STREAMING_VC_ID)
-    if not streaming_vc or not isinstance(streaming_vc, discord.VoiceChannel): return
-
-    human_listeners = [m for m in streaming_vc.members if not m.bot]
-    is_bot_connected = bot.voice_client_music and bot.voice_client_music.is_connected()
-
-    if is_bot_connected and not human_listeners:
-        logger.info("No active users detected. Disconnecting music bot.")
-        await bot.voice_client_music.disconnect()
-        bot.voice_client_music = None
-        async with state.music_lock: state.is_music_playing, state.is_music_paused, state.current_song = False, False, None
-        await bot.change_presence(activity=None)
-        return
-
-    if not is_bot_connected and human_listeners:
-        logger.info("Active user detected and bot is not in VC. Triggering music start.")
-        asyncio.create_task(start_music_playback())
-
 @bot.event
 @handle_errors
 async def on_voice_state_update(member: discord.Member, before: discord.VoiceState, after: discord.VoiceState) -> None:
-    """Handles voice state updates to manage music bot presence."""
-    if member.bot: return
+    """Handles auto-disconnecting when the voice channel is empty."""
+    if member.bot and member.id != bot.user.id:
+        return
 
-    is_event_in_streaming_vc = (before.channel and before.channel.id == bot_config.STREAMING_VC_ID) or \
-                               (after.channel and after.channel.id == bot_config.STREAMING_VC_ID)
-    if is_event_in_streaming_vc:
-        asyncio.create_task(manage_music_presence())
+    if not bot.voice_client_music or not bot.voice_client_music.is_connected():
+        return
+        
+    voice_channel = bot.voice_client_music.channel
+    human_listeners = [m for m in voice_channel.members if not m.bot]
+
+    if not human_listeners:
+        logger.info(f"Channel '{voice_channel.name}' is empty of users. Disconnecting.")
+        await bot.voice_client_music.disconnect()
+        bot.voice_client_music = None
+        async with state.music_lock:
+            state.is_music_playing, state.is_music_paused, state.current_song = False, False, None
+            state.search_queue.clear()
+            state.active_playlist.clear()
+        await bot.change_presence(activity=None)
 
 @tasks.loop(minutes=2)
 async def periodic_menu_update() -> None:
     """Periodically posts the music menu to the control channel."""
+    if not bot_config.MUSIC_CONTROL_CHANNEL_ID: return # Don't run if no channel is set
     try:
         guild = bot.get_guild(bot_config.GUILD_ID)
         if not guild: return
@@ -573,42 +577,18 @@ async def periodic_menu_update() -> None:
             logger.warning(f"Music control channel {bot_config.MUSIC_CONTROL_CHANNEL_ID} not found.")
             return
 
-        two_weeks_ago = discord.utils.utcnow() - timedelta(days=14)
+        two_weeks_ago = discord.utils.utcnow() - discord.Timedelta(days=14)
         try:
+            # Only purge our own messages and command invocations
             await channel.purge(limit=100, check=lambda m: m.created_at > two_weeks_ago and (m.author == bot.user or m.content.startswith('!')))
+        except discord.errors.Forbidden:
+            logger.warning(f"Bot does not have permission to purge messages in channel {channel.name}.")
         except Exception as e:
             logger.error(f"Failed to purge control channel: {e}")
         
         await helper.send_music_menu(channel)
     except Exception as e:
         logger.error(f"Periodic menu update task failed: {e}", exc_info=True)
-
-@tasks.loop(seconds=10)
-async def music_playback_watchdog():
-    """A watchdog to ensure the music bot behaves correctly and doesn't go silent."""
-    if not state.music_enabled: return
-
-    guild = bot.get_guild(bot_config.GUILD_ID)
-    if not guild: return
-    streaming_vc = guild.get_channel(bot_config.STREAMING_VC_ID)
-    if not streaming_vc: return
-
-    human_listeners = [m for m in streaming_vc.members if not m.bot]
-    is_bot_connected = bot.voice_client_music and bot.voice_client_music.is_connected()
-
-    if (human_listeners and not is_bot_connected) or (not human_listeners and is_bot_connected):
-        asyncio.create_task(manage_music_presence())
-        return
-
-    async with state.music_lock: is_processing = state.is_processing_song
-    if human_listeners and is_bot_connected:
-        if not bot.voice_client_music.is_playing() and not bot.voice_client_music.is_paused() and not is_processing:
-            logger.warning("Watchdog: Bot is connected but idle with listeners. Force-starting playback.")
-            await start_music_playback()
-
-@music_playback_watchdog.before_loop
-async def before_music_watchdog():
-    await bot.wait_until_ready()
 
 #########################################
 # Bot Commands
@@ -653,22 +633,29 @@ async def is_song_in_queue(state: BotState, song_path_or_url: str) -> bool:
 @handle_errors
 async def mpauseplay(ctx):
     if not state.music_enabled: return await ctx.send("Music features are disabled.", delete_after=10)
-    if not await ensure_voice_connection(): return await ctx.send("❌ Music player is not connected.", delete_after=10)
+    if not await ensure_voice_connection(ctx): return
+    
     was_stopped = False
     async with state.music_lock:
-        if bot.voice_client_music.is_playing(): bot.voice_client_music.pause(); state.is_music_paused, state.is_music_playing = True, False
-        elif bot.voice_client_music.is_paused(): bot.voice_client_music.resume(); state.is_music_paused, state.is_music_playing = False, True
-        else: was_stopped = True
-    if was_stopped: await play_next_song()
+        if bot.voice_client_music.is_playing(): 
+            bot.voice_client_music.pause()
+            state.is_music_paused, state.is_music_playing = True, False
+        elif bot.voice_client_music.is_paused(): 
+            bot.voice_client_music.resume()
+            state.is_music_paused, state.is_music_playing = False, True
+        else: 
+            was_stopped = True
+            
+    if was_stopped: await play_next_song(ctx=ctx)
 
 @bot.command(name='mskip')
 @require_user_preconditions()
 @handle_errors
 async def mskip(ctx):
     if not state.music_enabled: return await ctx.send("Music features are disabled.", delete_after=10)
-    if not await ensure_voice_connection(): return await ctx.send("❌ Music player is not connected.", delete_after=10)
     if not bot.voice_client_music or not (bot.voice_client_music.is_playing() or bot.voice_client_music.is_paused()):
         return await ctx.send("Nothing is playing to skip.", delete_after=10)
+    if not await ensure_voice_connection(ctx): return
 
     async with state.music_lock:
         if state.music_mode == 'loop':
@@ -683,7 +670,7 @@ async def mskip(ctx):
 @handle_errors
 async def volume(ctx, level: int):
     if not state.music_enabled: return await ctx.send("Music features are disabled.", delete_after=10)
-    if not await ensure_voice_connection(): return await ctx.send("❌ Music player is not connected.", delete_after=10)
+    if not await ensure_voice_connection(ctx): return
     if not 0 <= level <= 100: return await ctx.send(f"Volume must be between 0 and 100.", delete_after=10)
     async with state.music_lock:
         new_volume = round((level / 100) * bot_config.MUSIC_MAX_VOLUME, 2)
@@ -702,7 +689,7 @@ def extract_youtube_url(query: str) -> Optional[str]:
 @handle_errors
 async def msearch(ctx, *, query: str):
     if not state.music_enabled: return await ctx.send("Music features are disabled.", delete_after=10)
-    if not await ensure_voice_connection(): return await ctx.send("❌ Music player is not connected.", delete_after=10)
+    if not await ensure_voice_connection(ctx): return
 
     status_msg = await ctx.send(f"⏳ Searching for `{query}`...")
     clean_query = extract_youtube_url(query) or query
@@ -784,7 +771,7 @@ async def msearch(ctx, *, query: str):
         response = f"✅ Added **{added_count}** songs to the queue."
         if skipped_count > 0: response += f" ({skipped_count} duplicates skipped)."
         await status_msg.edit(content=response)
-        if was_idle and added_count > 0: await play_next_song()
+        if was_idle and added_count > 0: await play_next_song(ctx=ctx)
         return
 
     class SearchResultsView(discord.ui.View):
@@ -820,6 +807,8 @@ async def msearch(ctx, *, query: str):
                 new_view = SearchResultsView(yt_hits, self.author, self.query, is_Youtube=True)
                 new_view.message = interaction.message; await interaction.message.edit(content="YouTube Results:", view=new_view)
                 return
+            
+            was_idle = False
             if val == "add_all":
                 songs_to_add, skipped_count = [], 0
                 async with state.music_lock:
@@ -830,19 +819,26 @@ async def msearch(ctx, *, query: str):
                         else: skipped_count += 1
                     if not songs_to_add: return await interaction.followup.send(f"✅ All songs on this page are already queued.", ephemeral=True)
                     state.search_queue.extend(songs_to_add)
-                    was_idle = not (bot.voice_client_music.is_playing() or bot.voice_client_music.is_paused())
+                    was_idle = not (bot.voice_client_music and (bot.voice_client_music.is_playing() or bot.voice_client_music.is_paused()))
                 msg = f"🎵 Added {len(songs_to_add)} songs."
                 if skipped_count > 0: msg += f" ({skipped_count} duplicates skipped)."
                 await interaction.followup.send(msg)
-                if was_idle: await asyncio.create_task(play_next_song())
             else:
                 song = self.hits[int(val)]
                 if await is_song_in_queue(bot.state, song['path']): return await interaction.followup.send(f"⚠️ **{song['title']}** is already in the queue.", ephemeral=True)
                 async with state.music_lock:
                     state.search_queue.append(song)
-                    was_idle = not (bot.voice_client_music.is_playing() or bot.voice_client_music.is_paused())
+                    was_idle = not (bot.voice_client_music and (bot.voice_client_music.is_playing() or bot.voice_client_music.is_paused()))
                 await interaction.followup.send(f"🎵 Added **{song['title']}** to the queue.")
-                if was_idle: await play_next_song()
+
+            if was_idle:
+                 # Need a context to start playback. We can get it from the interaction.
+                fake_message = await interaction.channel.send("Starting playback...")
+                fake_message.author = interaction.user
+                ctx = await bot.get_context(fake_message)
+                await fake_message.delete()
+                await play_next_song(ctx=ctx)
+
         async def on_timeout(self):
             if self.message:
                 for item in self.children: item.disabled = True
@@ -912,6 +908,8 @@ async def playlist_save(ctx, *, name: str):
 @handle_errors
 async def playlist_load(ctx, *, name: Optional[str] = None):
     if not name: return await ctx.send("Usage: `!playlist load <name>`", delete_after=10)
+    if not await ensure_voice_connection(ctx): return
+
     playlist_name, added_count, skipped_count, was_idle = name.lower(), 0, 0, False
     async with state.music_lock:
         if playlist_name not in state.playlists: return await ctx.send(f"❌ Playlist **{name}** not found.", delete_after=10)
@@ -920,7 +918,13 @@ async def playlist_load(ctx, *, name: Optional[str] = None):
         if state.current_song: existing.add(state.current_song.get('path'))
         new_songs = []
         for song in songs_to_load:
-            if song.get('path') and song['path'] not in existing: new_songs.append(song); existing.add(song['path']); added_count += 1
+            # Add context to each loaded song
+            song_with_ctx = song.copy()
+            song_with_ctx['ctx'] = ctx
+            if song_with_ctx.get('path') and song_with_ctx['path'] not in existing: 
+                new_songs.append(song_with_ctx)
+                existing.add(song_with_ctx['path'])
+                added_count += 1
             else: skipped_count += 1
         if new_songs:
             state.search_queue.extend(new_songs)
@@ -928,7 +932,7 @@ async def playlist_load(ctx, *, name: Optional[str] = None):
     msg = f"✅ Playlist **{name}** loaded. Added {added_count} new songs."
     if skipped_count > 0: msg += f" Skipped {skipped_count} duplicate(s)."
     await ctx.send(msg)
-    if was_idle and added_count > 0: await play_next_song()
+    if was_idle and added_count > 0: await play_next_song(ctx=ctx)
 
 @playlist.command(name='list')
 @handle_errors
@@ -989,8 +993,8 @@ async def mon(ctx):
     if state.music_enabled: return await ctx.send("Music features are already enabled.", delete_after=10)
     logger.warning(f"Music features ENABLED by {ctx.author.name}")
     state.music_enabled = True
-    await ctx.send("✅ Music features have been **ENABLED**. Connecting...")
-    await start_music_playback()
+    await ctx.send("✅ Music features have been **ENABLED**.")
+    # Do not auto-connect here; wait for a user command like !msearch
 
 @bot.command(name='disable')
 @require_allowed_user()
