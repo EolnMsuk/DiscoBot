@@ -1,6 +1,6 @@
-# DiscoBot
+# DyscoBot
 
-DiscoBot is a feature-rich, high-performance Discord music bot designed for a seamless listening experience. It allows users to play music from multiple sources, manage an interactive queue, and save persistent playlists. The bot features intuitive button controls, global hotkey support, and a fully asynchronous architecture for rock-solid stability.
+DyscoBot is a feature-rich, high-performance Dyscord music bot designed for a seamless listening experience. It allows users to play music from multiple sources, manage an interactive queue, and save persistent playlists. The bot features intuitive button controls, global hotkey support, and a fully asynchronous architecture for rock-solid stability.
 
 [Key Features](#-key-features) -> [Command List](#-command-list) -> [How to Setup](#️-setup--configuration)
 
@@ -19,7 +19,7 @@ DiscoBot is a feature-rich, high-performance Discord music bot designed for a se
 
 ### 🎧 High-Performance Audio & Control
 
-* **Global Hotkeys**: Configure system-wide keyboard shortcuts to trigger commands like `!mskip`, `!mpauseplay`, and volume controls from anywhere on the host machine, even when Discord isn't focused.
+* **Global Hotkeys**: Configure system-wide keyboard shortcuts to trigger commands like `!mskip`, `!mpauseplay`, and volume controls from anywhere on the host machine, even when Dyscord isn't focused.
 * **Audio Normalization**: Optional loudness normalization for local music files ensures a consistent volume level between your personal library and online streams.
 * **Persistent State**: The bot's current queue, playlists, and settings are saved to `data.json`, ensuring your session is restored after a restart.
 * **Detailed Logging**: Utilizes `loguru` for detailed, color-coded logs of all commands and player activity, saved to `bot.log` for easy troubleshooting.
