@@ -12,8 +12,6 @@ from tools import (
     BotState,
     BotConfig,
     handle_errors,
-    record_command_usage,
-    record_command_usage_by_user,
 )
 
 async def _button_callback_handler(interaction: discord.Interaction, command: str, bot_config: BotConfig, state: BotState) -> None:
@@ -175,7 +173,6 @@ class BotHelper:
     @handle_errors
     async def confirm_and_clear_music_queue(self, ctx) -> None:
         """Confirms and clears all music queues, stopping playback."""
-        record_command_usage(self.state.analytics, "!mclear"); record_command_usage_by_user(self.state.analytics, ctx.author.id, "!mclear")
         async with self.state.music_lock:
             queue_len = len(self.state.active_playlist + self.state.search_queue)
             is_playing = self.bot.voice_client_music and (self.bot.voice_client_music.is_playing() or self.bot.voice_client_music.is_paused())

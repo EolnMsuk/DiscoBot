@@ -35,8 +35,6 @@ from tools import (
     BotConfig,
     BotState,
     handle_errors,
-    record_command_usage,
-    record_command_usage_by_user,
 )
 
 # Load environment variables from the .env file
@@ -366,6 +364,7 @@ async def _play_song(song_info: dict, ctx: commands.Context):
 
     except Exception as e:
         logger.critical("CRITICAL FAILURE IN _play_song.", exc_info=True)
+        logger.error(f"--> Failed Song Info: {song_info}")
         if ctx: await ctx.send(f"❌ **Playback Error:** Could not play `{song_info.get('title', 'Unknown')}`. Check logs.", delete_after=15)
         async with state.music_lock: state.is_music_playing, state.is_processing_song = False, False
 
@@ -688,155 +687,312 @@ def extract_youtube_url(query: str) -> Optional[str]:
 @require_user_preconditions()
 @handle_errors
 async def msearch(ctx, *, query: str):
-    if not state.music_enabled: return await ctx.send("Music features are disabled.", delete_after=10)
-    if not await ensure_voice_connection(ctx): return
+    if not state.music_enabled:
+        await ctx.send("Music features are currently disabled. Use `!mon` to enable.", delete_after=10)
+        return
 
-    status_msg = await ctx.send(f"⏳ Searching for `{query}`...")
-    clean_query = extract_youtube_url(query) or query
+    if not await ensure_voice_connection(ctx):
+        return
+
+    search_query = query.strip()
+    status_msg = await ctx.send(f"⏳ Searching for `{search_query}`...")
+    
+    clean_query = extract_youtube_url(search_query) or search_query
+
     all_hits = []
     is_youtube_search = False
 
-    url_pattern = re.compile(r'https?://(www\.)?(youtube|youtu|soundcloud|spotify|bandcamp)\.(com|be)/.+')
+    url_pattern = re.compile(
+        r'https?://(www\.)?'
+        r'((music\.)?youtube|youtu|soundcloud|spotify|bandcamp)\.(com|be)/'
+        r'.+'
+    )
+    
     is_spotify_url = 'spotify' in clean_query.lower()
     is_generic_url = url_pattern.match(clean_query)
 
     if is_spotify_url:
-        if not sp: return await status_msg.edit(content="❌ Spotify support is not configured.")
-        await status_msg.edit(content=f"Fetching metadata from Spotify API...")
+        if not sp:
+            await status_msg.edit(content="❌ Spotify support is not configured. Missing credentials in `.env` file.")
+            return
+        
+        await status_msg.edit(content=f"Spotify link detected. Fetching metadata from Spotify API...")
         try:
             tracks_to_search = []
-            if '/track/' in clean_query: tracks_to_search.append(sp.track(clean_query))
-            elif '/album/' in clean_query: tracks_to_search.extend(sp.album_tracks(clean_query)['items'])
-            elif '/playlist/' in clean_query: tracks_to_search.extend(item['track'] for item in sp.playlist_tracks(clean_query)['items'] if item['track'])
-            if not tracks_to_search: raise ValueError("Could not retrieve tracks from Spotify URL.")
-            youtube_queries = [f"{t['artists'][0]['name']} {t['name']}" for t in tracks_to_search if t and t.get('name') and t.get('artists')]
+            if '/track/' in clean_query:
+                track_info = sp.track(clean_query)
+                if track_info: tracks_to_search.append(track_info)
+            elif '/album/' in clean_query:
+                results = sp.album_tracks(clean_query)
+                if results: tracks_to_search.extend(results['items'])
+            elif '/playlist/' in clean_query:
+                results = sp.playlist_tracks(clean_query)
+                if results: tracks_to_search.extend(item['track'] for item in results['items'] if item['track'])
+            
+            if not tracks_to_search:
+                raise ValueError("Could not retrieve any tracks from the Spotify URL.")
+
+            youtube_queries = [f"{track['artists'][0]['name']} {track['name']}" for track in tracks_to_search if track and track.get('name') and track.get('artists')]
+            
+            if not youtube_queries:
+                raise ValueError("Could not extract any song titles from the Spotify link.")
+
             await status_msg.edit(content=f"⏳ Found {len(youtube_queries)} track(s). Searching on YouTube...")
             with yt_dlp.YoutubeDL(YDL_OPTIONS) as ydl:
                 for yt_query in youtube_queries:
                     try:
-                        results = await asyncio.to_thread(ydl.extract_info, f"ytsearch1:{yt_query}", download=False)
-                        if results and results.get('entries'):
-                            video = results['entries'][0]
-                            all_hits.append({'title': video.get('title'), 'path': video.get('webpage_url'), 'is_stream': True, 'ctx': ctx})
-                    except Exception: logger.warning(f"Could not find YouTube match for '{yt_query}'")
-        except Exception as e: return await status_msg.edit(content=f"❌ Error processing Spotify link: {e}")
-        if not all_hits: return await status_msg.edit(content=f"❌ No YouTube matches found for Spotify tracks.")
-    
+                        search_results = await asyncio.to_thread(ydl.extract_info, f"ytsearch1:{yt_query}", download=False)
+                        if search_results and search_results.get('entries'):
+                            video_info = search_results['entries'][0]
+                            
+                            title = video_info.get('title', '').lower()
+                            if '[deleted video]' in title or '[private video]' in title:
+                                logger.info(f"Skipping unavailable Spotify->YouTube result: {video_info.get('title')}")
+                                continue
+
+                            all_hits.append({
+                                'title': video_info.get('title', 'Unknown Title'),
+                                'path': video_info.get('webpage_url', video_info.get('url')),
+                                'is_stream': True, 'ctx': ctx
+                            })
+                    except Exception:
+                        logger.warning(f"Could not find a YouTube match for Spotify query '{yt_query}'")
+        except Exception as e:
+            await status_msg.edit(content=f"❌ An error occurred while processing the Spotify link: {e}")
+            return
+        
     elif is_generic_url:
-        await status_msg.edit(content=f"⏳ Processing URL...")
+        await status_msg.edit(content=f"⏳ Processing URL: `{clean_query}`...")
         try:
             with yt_dlp.YoutubeDL(YDL_OPTIONS) as ydl:
-                results = await asyncio.to_thread(ydl.extract_info, clean_query, download=False)
-                if results and 'entries' in results:
-                    for entry in results['entries']:
-                        if entry and entry.get('url'): all_hits.append({'title': entry.get('title'), 'path': entry.get('webpage_url'), 'is_stream': True, 'ctx': ctx})
-                elif results and results.get('url'):
-                    all_hits.append({'title': results.get('title'), 'path': results.get('webpage_url'), 'is_stream': True, 'ctx': ctx})
-        except Exception as e: logger.warning(f"URL processing for '{clean_query}' failed: {e}")
+                search_results = await asyncio.to_thread(ydl.extract_info, clean_query, download=False)
+                
+                if search_results and 'entries' in search_results:
+                    for entry in search_results['entries']:
+                        if not entry or not entry.get('url'):
+                            continue
+                        
+                        title = entry.get('title', '').lower()
+                        if '[deleted video]' in title or '[private video]' in title:
+                            logger.info(f"Skipping unavailable video from URL/Playlist: {entry.get('title')}")
+                            continue
+                            
+                        all_hits.append({'title': entry.get('title', 'Unknown Title'), 'path': entry.get('webpage_url', entry.get('url')), 'is_stream': True, 'ctx': ctx})
+                
+                elif search_results and search_results.get('url'):
+                    title = search_results.get('title', '').lower()
+                    if '[deleted video]' not in title and '[private video]' not in title:
+                        all_hits.append({'title': search_results.get('title', 'Unknown Title'), 'path': search_results.get('webpage_url', search_results.get('url')), 'is_stream': True, 'ctx': ctx})
+                    else:
+                        logger.info(f"Skipping unavailable video from single URL: {search_results.get('title')}")
+
+        except Exception as e:
+            logger.warning(f"Direct URL processing for '{clean_query}' failed with error: {e}. Falling back to text search.")
 
     if not all_hits:
         if not is_generic_url:
+            await status_msg.edit(content=f"⏳ Searching for `{clean_query}` in the local library...")
             search_terms = [re.sub(r'[^a-z0-9]', '', term) for term in clean_query.lower().split()]
+            local_hits = []
             if search_terms:
-                for path, meta in MUSIC_METADATA_CACHE.items():
-                    metadata_str = (re.sub(r'[^a-z0-9]', '', os.path.basename(path).lower()) + meta.get('artist', '') + meta.get('title', '') + meta.get('album', ''))
-                    if all(term in metadata_str for term in search_terms):
-                        all_hits.append({'title': get_display_title_from_path(path), 'path': path, 'is_stream': False, 'ctx': ctx})
+                for song_path, metadata in MUSIC_METADATA_CACHE.items():
+                    searchable_metadata = (
+                        re.sub(r'[^a-z0-9]', '', os.path.basename(song_path).lower()) +
+                        metadata.get('artist', '') + metadata.get('title', '') + metadata.get('album', '')
+                    )
+                    if all(term in searchable_metadata for term in search_terms):
+                        display_title = get_display_title_from_path(song_path)
+                        local_hits.append({'title': display_title, 'path': song_path, 'is_stream': False, 'ctx': ctx})
+            all_hits.extend(local_hits)
+
         if not all_hits:
+            await status_msg.edit(content=f"⏳ No local results. Searching YouTube for `{clean_query}`...")
             is_youtube_search = True
             try:
                 with yt_dlp.YoutubeDL(YDL_OPTIONS) as ydl:
-                    results = await asyncio.to_thread(ydl.extract_info, f"ytsearch10:{clean_query}", download=False)
-                    if results and 'entries' in results:
-                        for entry in results['entries']:
-                            if entry and entry.get('url'): all_hits.append({'title': entry.get('title'),'path': entry.get('webpage_url'),'is_stream': True,'ctx': ctx})
-            except Exception as e: return await status_msg.edit(content=f"❌ YouTube search error: {e}")
+                    search_results = await asyncio.to_thread(ydl.extract_info, f"ytsearch10:{clean_query}", download=False)
+                    if search_results and 'entries' in search_results:
+                        for entry in search_results['entries']:
+                            if entry and entry.get('url'):
+                                title = entry.get('title', '').lower()
+                                if '[deleted video]' in title or '[private video]' in title:
+                                    logger.info(f"Skipping unavailable video from search: {entry.get('title')}")
+                                    continue
+                                
+                                all_hits.append({'title': entry.get('title', 'Unknown Title'),'path': entry.get('webpage_url', entry.get('url')),'is_stream': True,'ctx': ctx})
+            except Exception as e:
+                await status_msg.edit(content=f"❌ An error occurred while searching YouTube: {e}")
+                logger.error(f"Youtube search failed for query '{clean_query}': {e}")
+                return
 
-    if not all_hits: return await status_msg.edit(content=f"❌ No songs found for `{query}`.")
+    if not all_hits:
+        await status_msg.edit(content=f"❌ No songs found matching `{search_query}`.")
+        return
 
     if (is_generic_url or is_spotify_url) and len(all_hits) >= 1:
         added_count, skipped_count, was_idle = 0, 0, False
         async with state.music_lock:
             existing_paths = {s.get('path') for s in (state.active_playlist + state.search_queue)}
             if state.current_song: existing_paths.add(state.current_song.get('path'))
-            new_songs = []
+            new_songs_to_queue = []
             for song in all_hits:
-                if song.get('path') and song['path'] not in existing_paths: new_songs.append(song); existing_paths.add(song['path'])
-                else: skipped_count += 1
-            if new_songs:
-                state.search_queue.extend(new_songs)
-                added_count = len(new_songs)
+                song_path = song.get('path')
+                if song_path and song_path not in existing_paths:
+                    new_songs_to_queue.append(song)
+                    existing_paths.add(song_path)
+                else:
+                    skipped_count += 1
+            
+            if new_songs_to_queue:
+                state.search_queue.extend(new_songs_to_queue)
+                added_count = len(new_songs_to_queue)
                 was_idle = not (bot.voice_client_music and (bot.voice_client_music.is_playing() or bot.voice_client_music.is_paused()))
         
-        response = f"✅ Added **{added_count}** songs to the queue."
-        if skipped_count > 0: response += f" ({skipped_count} duplicates skipped)."
-        await status_msg.edit(content=response)
-        if was_idle and added_count > 0: await play_next_song(ctx=ctx)
+        response_msg = f"✅ Added **{added_count}** songs to the queue."
+        if skipped_count > 0:
+            response_msg += f" ({skipped_count} duplicates were skipped)."
+        await status_msg.edit(content=response_msg)
+
+        if was_idle and added_count > 0:
+            await play_next_song(ctx=ctx)
+            
         return
 
     class SearchResultsView(discord.ui.View):
-        def __init__(self, hits: list, author: discord.Member, query: str, is_Youtube: bool):
+        def __init__(self, hits: list, author: discord.Member, query: str, is_Youtube: bool, youtube_page: int = 1):
             super().__init__(timeout=180.0)
-            self.hits, self.author, self.query, self.is_Youtube = hits, author, query, is_Youtube
+            self.hits, self.author, self.query, self.is_Youtube, self.youtube_page = hits, author, query, is_Youtube, youtube_page
+            self.current_page, self.page_size = 0, 23
+            self.total_pages = (len(self.hits) + self.page_size - 1) // self.page_size
             self.message = None
             self.update_components()
+
         def update_components(self):
             self.clear_items()
+            self.add_item(self.create_dropdown())
+            if not self.is_Youtube and self.total_pages > 1:
+                self.add_item(self.create_nav_button("⬅️ Prev", "prev_page", self.current_page == 0))
+                self.add_item(self.create_nav_button("Next ➡️", "next_page", self.current_page >= self.total_pages - 1))
+            if self.is_Youtube:
+                self.add_item(self.create_youtube_nav_button("Next Page ➡️", "youtube_next_page", len(self.hits) < 10))
+
+        def create_dropdown(self) -> discord.ui.Select:
+            start_index = self.current_page * self.page_size
+            end_index = start_index + self.page_size
+            page_hits = self.hits[start_index:end_index]
             options = []
-            if not self.is_Youtube: options.append(discord.SelectOption(label=f"Search YouTube for '{self.query[:50]}'", value="search_youtube", emoji="📺"))
-            if self.hits: options.append(discord.SelectOption(label=f"Add All ({len(self.hits)})", value="add_all", emoji="➕"))
-            for i, hit in enumerate(self.hits[:23]): options.append(discord.SelectOption(label=f"{i+1}. {hit['title']}"[:95], value=str(i)))
-            select_menu = discord.ui.Select(placeholder="Select a song to add...", options=options)
+            if not self.is_Youtube:
+                options.append(discord.SelectOption(label=f"Search YouTube for '{self.query[:50]}'", value="search_youtube", emoji="📺"))
+            if page_hits:
+                options.append(discord.SelectOption(label=f"Add All ({len(page_hits)}) On This Page", value="add_all", emoji="➕"))
+            for i, hit in enumerate(page_hits):
+                options.append(discord.SelectOption(label=f"{(start_index + i) + 1}. {hit['title']}"[:95], value=str(start_index + i)))
+            placeholder = f"Page {self.current_page + 1}/{self.total_pages}..." if not self.is_Youtube else f"YouTube Page {self.youtube_page}..."
+            select_menu = discord.ui.Select(placeholder=placeholder, options=options)
             select_menu.callback = self.select_callback
-            self.add_item(select_menu)
+            return select_menu
+
+        def create_nav_button(self, label: str, custom_id: str, disabled: bool) -> discord.ui.Button:
+            button = discord.ui.Button(label=label, style=discord.ButtonStyle.secondary, custom_id=custom_id, disabled=disabled)
+            async def nav_callback(interaction: discord.Interaction):
+                if interaction.user != self.author:
+                    await interaction.response.send_message("You cannot control this menu.", ephemeral=True); return
+                if interaction.data['custom_id'] == 'prev_page': self.current_page -= 1
+                elif interaction.data['custom_id'] == 'next_page': self.current_page += 1
+                self.update_components()
+                await interaction.response.edit_message(view=self)
+            button.callback = nav_callback
+            return button
+            
+        def create_youtube_nav_button(self, label: str, custom_id: str, disabled: bool) -> discord.ui.Button:
+            button = discord.ui.Button(label=label, style=discord.ButtonStyle.primary, custom_id=custom_id, disabled=disabled)
+            async def youtube_nav_callback(interaction: discord.Interaction):
+                if interaction.user != self.author:
+                    await interaction.response.send_message("You cannot control this menu.", ephemeral=True); return
+                await interaction.response.edit_message(content=f"⏳ Loading page {self.youtube_page + 1} of YouTube results...", view=None)
+                next_page = self.youtube_page + 1
+                next_page_ydl_opts = YDL_OPTIONS.copy()
+                next_page_ydl_opts['playliststart'] = (self.youtube_page * 10) + 1
+                new_hits = []
+                try:
+                    with yt_dlp.YoutubeDL(next_page_ydl_opts) as ydl:
+                        search_results = await asyncio.to_thread(ydl.extract_info, f"ytsearch10:{self.query}", download=False)
+                        if 'entries' in search_results:
+                            for entry in search_results.get('entries', []):
+                                if not entry or not entry.get('url'): continue
+                                title = entry.get('title', '').lower()
+                                if '[deleted video]' in title or '[private video]' in title:
+                                    logger.info(f"Skipping unavailable video from YouTube 'Next Page': {entry.get('title')}")
+                                    continue
+                                new_hits.append({'title': entry.get('title', 'Unknown Title'), 'path': entry.get('webpage_url', entry.get('url')), 'is_stream': True, 'ctx': ctx})
+                except Exception as e:
+                    logger.error(f"YouTube next page search failed for query '{self.query}': {e}", exc_info=True)
+                    self.update_components(); await interaction.message.edit(content="An error occurred.", view=self); return
+                if not new_hits:
+                    self.disabled = True; self.update_components(); await interaction.message.edit(content="No more results found.", view=self); return
+                new_view = SearchResultsView(hits=new_hits, author=self.author, query=self.query, is_Youtube=True, youtube_page=next_page)
+                new_view.message = interaction.message; await interaction.message.edit(content=f"Showing YouTube results page {next_page}:", view=new_view)
+            button.callback = youtube_nav_callback
+            return button
+
         async def select_callback(self, interaction: discord.Interaction):
             await interaction.response.defer()
-            if interaction.user != self.author: return await interaction.followup.send("You cannot control this menu.", ephemeral=True)
-            val = interaction.data['values'][0]
-            if val == "search_youtube":
+            if interaction.user != self.author:
+                await interaction.followup.send("You cannot control this menu.", ephemeral=True); return
+            selected_value = interaction.data['values'][0]
+
+            if selected_value == "search_youtube":
                 await interaction.message.edit(content=f"⏳ Searching YouTube for `{self.query}`...", view=None)
-                yt_hits = []
+                youtube_hits = []
                 try:
                     with yt_dlp.YoutubeDL(YDL_OPTIONS) as ydl:
-                        results = await asyncio.to_thread(ydl.extract_info, f"ytsearch10:{self.query}", download=False)
-                        if 'entries' in results:
-                            for entry in results['entries']:
-                                if entry and entry.get('url'): yt_hits.append({'title': entry.get('title'), 'path': entry.get('webpage_url'), 'is_stream': True})
-                except Exception as e: return await interaction.message.edit(content=f"❌ Error: {e}")
-                if not yt_hits: return await interaction.message.edit(content=f"❌ No YouTube results for `{self.query}`.")
-                new_view = SearchResultsView(yt_hits, self.author, self.query, is_Youtube=True)
-                new_view.message = interaction.message; await interaction.message.edit(content="YouTube Results:", view=new_view)
+                        search_results = await asyncio.to_thread(ydl.extract_info, f"ytsearch10:{self.query}", download=False)
+                        if 'entries' in search_results:
+                            for entry in search_results['entries']:
+                                if not entry or not entry.get('url'): continue
+                                title = entry.get('title', '').lower()
+                                if '[deleted video]' in title or '[private video]' in title:
+                                    logger.info(f"Skipping unavailable video from 'Search YouTube' button: {entry.get('title')}")
+                                    continue
+                                youtube_hits.append({'title': entry.get('title', 'Unknown Title'), 'path': entry.get('webpage_url', entry.get('url')), 'is_stream': True, 'ctx': ctx})
+                except Exception as e:
+                    await interaction.message.edit(content=f"❌ An error occurred: {e}"); logger.error(f"Youtube failed: {e}"); return
+                if not youtube_hits:
+                    await interaction.message.edit(content=f"❌ No songs found on YouTube for `{self.query}`."); return
+                new_view = SearchResultsView(youtube_hits, self.author, self.query, is_Youtube=True, youtube_page=1)
+                new_view.message = interaction.message; await interaction.message.edit(content=f"Found {len(youtube_hits)} results from YouTube:", view=new_view)
                 return
-            
+
             was_idle = False
-            if val == "add_all":
-                songs_to_add, skipped_count = [], 0
+            if selected_value == "add_all":
+                start_index, end_index = self.current_page * self.page_size, (self.current_page + 1) * self.page_size
+                songs_to_add_raw = self.hits[start_index:end_index]
+                songs_to_add, already_in_queue_count = [], 0
                 async with state.music_lock:
-                    existing = {s.get('path') for s in (state.active_playlist + state.search_queue)}
-                    if state.current_song: existing.add(state.current_song.get('path'))
-                    for song in self.hits[:23]:
-                        if song.get('path') and song['path'] not in existing: songs_to_add.append(song); existing.add(song['path'])
-                        else: skipped_count += 1
-                    if not songs_to_add: return await interaction.followup.send(f"✅ All songs on this page are already queued.", ephemeral=True)
+                    existing_paths = {s.get('path') for s in (state.active_playlist + state.search_queue)}
+                    if state.current_song: existing_paths.add(state.current_song.get('path'))
+                for song in songs_to_add_raw:
+                    if song.get('path') and song['path'] not in existing_paths:
+                        songs_to_add.append(song); existing_paths.add(song['path'])
+                    else: already_in_queue_count += 1
+                if not songs_to_add:
+                    await interaction.followup.send(f"✅ All songs on this page are already in the queue.", ephemeral=True); return
+                async with state.music_lock:
                     state.search_queue.extend(songs_to_add)
-                    was_idle = not (bot.voice_client_music and (bot.voice_client_music.is_playing() or bot.voice_client_music.is_paused()))
-                msg = f"🎵 Added {len(songs_to_add)} songs."
-                if skipped_count > 0: msg += f" ({skipped_count} duplicates skipped)."
-                await interaction.followup.send(msg)
+                    was_idle = not (bot.voice_client_music.is_playing() or bot.voice_client_music.is_paused())
+                response_msg = f"🎵 {interaction.user.mention} added {len(songs_to_add)} songs."
+                if already_in_queue_count > 0: response_msg += f" ({already_in_queue_count} were duplicates)."
+                await interaction.followup.send(response_msg)
             else:
-                song = self.hits[int(val)]
-                if await is_song_in_queue(bot.state, song['path']): return await interaction.followup.send(f"⚠️ **{song['title']}** is already in the queue.", ephemeral=True)
+                selected_song = self.hits[int(selected_value)]
+                if await is_song_in_queue(bot.state, selected_song['path']):
+                    await interaction.followup.send(f"⚠️ **{selected_song['title']}** is already in the queue.", ephemeral=True); return
                 async with state.music_lock:
-                    state.search_queue.append(song)
-                    was_idle = not (bot.voice_client_music and (bot.voice_client_music.is_playing() or bot.voice_client_music.is_paused()))
-                await interaction.followup.send(f"🎵 Added **{song['title']}** to the queue.")
+                    state.search_queue.append(selected_song)
+                    was_idle = not (bot.voice_client_music.is_playing() or bot.voice_client_music.is_paused())
+                await interaction.followup.send(f"🎵 {interaction.user.mention} added **{selected_song['title']}** to the queue.")
 
             if was_idle:
-                 # Need a context to start playback. We can get it from the interaction.
-                fake_message = await interaction.channel.send("Starting playback...")
-                fake_message.author = interaction.user
-                ctx = await bot.get_context(fake_message)
-                await fake_message.delete()
                 await play_next_song(ctx=ctx)
 
         async def on_timeout(self):
@@ -845,8 +1001,10 @@ async def msearch(ctx, *, query: str):
                 try: await self.message.edit(content="Search menu timed out.", view=self)
                 except discord.NotFound: pass
 
-    view = SearchResultsView(all_hits, ctx.author, query=query, is_Youtube=is_youtube_search)
-    view.message = await status_msg.edit(content=f"Found {len(all_hits)} results:", view=view)
+    view = SearchResultsView(all_hits, ctx.author, query=search_query, is_Youtube=is_youtube_search)
+    content_msg = f"Found {len(all_hits)} results. Select a song to add:"
+    view.message = await status_msg.edit(content=content_msg, view=view)
+
 
 @bot.command(name='mclear')
 @require_user_preconditions()
@@ -875,7 +1033,6 @@ async def mshuffle(ctx):
 @handle_errors
 async def nowplaying(ctx):
     if not state.music_enabled: return
-    record_command_usage(state.analytics, "!nowplaying"); record_command_usage_by_user(state.analytics, ctx.author.id, "!nowplaying")
     await helper.show_now_playing(ctx)
 
 @bot.command(name='queue', aliases=['q'])
@@ -883,7 +1040,6 @@ async def nowplaying(ctx):
 @handle_errors
 async def queue(ctx):
     if not state.music_enabled: return
-    record_command_usage(state.analytics, f"!{ctx.invoked_with}"); record_command_usage_by_user(state.analytics, ctx.author.id, f"!{ctx.invoked_with}")
     await helper.show_queue(ctx)
 
 @bot.group(name='playlist', invoke_without_command=True)
@@ -891,7 +1047,6 @@ async def queue(ctx):
 @handle_errors
 async def playlist(ctx):
     if not state.music_enabled: return
-    record_command_usage(state.analytics, "!playlist"); record_command_usage_by_user(state.analytics, ctx.author.id, "!playlist")
     await ctx.send("Usage: `!playlist save|load|list|delete <name>`.", delete_after=10)
 
 @playlist.command(name='save')
@@ -1021,6 +1176,13 @@ async def enable(ctx, user: discord.User):
 if __name__ == "__main__":
     if not os.getenv("BOT_TOKEN"):
         logger.critical("Missing environment variable: BOT_TOKEN"); sys.exit(1)
+
+    # Add new library dependencies to requirements if needed
+    try:
+        import keyboard
+        import mutagen
+    except ImportError:
+        logger.warning("Missing libraries. Please run: pip install keyboard mutagen")
 
     def handle_shutdown_signal(signum, _frame):
         logger.info("Graceful shutdown initiated by signal")

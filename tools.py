@@ -35,21 +35,6 @@ def handle_errors(func: Any) -> Any:
                 except Exception as send_e: logger.error(f"Failed to send error message: {send_e}")
     return wrapper
 
-ALLOWED_STATS_COMMANDS = {
-    "!msearch", "!m", "!mclear", "!mshuffle", "!mpauseplay", "!mpp", "!mskip", 
-    "!nowplaying", "!np", "!queue", "!q", "!playlist", "!volume", "!vol"
-}
-
-def record_command_usage(analytics: Dict[str, Any], command_name: str) -> None:
-    if command_name not in ALLOWED_STATS_COMMANDS: return
-    analytics["command_usage"][command_name] = analytics["command_usage"].get(command_name, 0) + 1
-
-def record_command_usage_by_user(analytics: Dict[str, Any], user_id: int, command_name: str) -> None:
-    if command_name not in ALLOWED_STATS_COMMANDS: return
-    user_id_str = str(user_id) # JSON keys must be strings
-    if user_id_str not in analytics["command_usage_by_user"]: analytics["command_usage_by_user"][user_id_str] = {}
-    analytics["command_usage_by_user"][user_id_str][command_name] = analytics["command_usage_by_user"][user_id_str].get(command_name, 0) + 1
-
 @dataclass
 class BotConfig:
     """Holds all configuration variables for the music bot."""
@@ -61,7 +46,6 @@ class BotConfig:
     ALLOWED_USERS: Set[int]
     ADMIN_ROLE_NAME: List[str]
     COMMAND_COOLDOWN: int
-    STATS_EXCLUDED_USERS: Set[int]
     
     # Music Settings
     MUSIC_ENABLED: bool
@@ -92,7 +76,6 @@ class BotConfig:
             ALLOWED_USERS=set(getattr(config_module, 'ALLOWED_USERS', [])),
             ADMIN_ROLE_NAME=getattr(config_module, 'ADMIN_ROLE_NAME', []),
             COMMAND_COOLDOWN=getattr(config_module, 'COMMAND_COOLDOWN', 5),
-            STATS_EXCLUDED_USERS=set(getattr(config_module, 'STATS_EXCLUDED_USERS', [])),
             
             # Music
             MUSIC_ENABLED=getattr(config_module, 'MUSIC_ENABLED', True),
@@ -114,7 +97,6 @@ class BotConfig:
 
 # Type Aliases for BotState clarity
 Cooldowns = Dict[int, Tuple[float, bool]]
-AnalyticsData = Dict[str, Union[Dict[str, int], Dict[str, Dict[str, int]]]]
 Playlists = Dict[str, List[Dict[str, Any]]]
 
 @dataclass
@@ -125,14 +107,12 @@ class BotState:
     # Concurrency Locks
     music_lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False)
     cooldown_lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False)
-    analytics_lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False)
     music_startup_lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False)
 
     # State Data
     cooldowns: Cooldowns = field(default_factory=dict)
     button_cooldowns: Cooldowns = field(default_factory=dict)
     disabled_users: Set[int] = field(default_factory=set)
-    analytics: AnalyticsData = field(default_factory=lambda: {"command_usage": {}, "command_usage_by_user": {}})
     
     # Music state
     music_enabled: bool = True
@@ -166,7 +146,6 @@ class BotState:
             return {k: v for k, v in song.items() if k != 'ctx'}
             
         return {
-            "analytics": self.analytics,
             "disabled_users": list(self.disabled_users),
             "music_enabled": self.music_enabled,
             "music_mode": self.music_mode,
@@ -181,10 +160,6 @@ class BotState:
     def from_dict(cls, data: Dict[str, Any], config: BotConfig) -> 'BotState':
         """Deserializes a dictionary into a BotState object."""
         state = cls(config=config)
-        analytics = data.get("analytics", {"command_usage": {}, "command_usage_by_user": {}})
-        # Ensure user IDs in analytics are strings for consistency
-        analytics["command_usage_by_user"] = {str(k): v for k, v in analytics.get("command_usage_by_user", {}).items()}
-        state.analytics = analytics
         state.disabled_users = set(data.get("disabled_users", []))
         # Music state
         state.music_enabled = data.get("music_enabled", config.MUSIC_ENABLED if config else True)
@@ -195,4 +170,3 @@ class BotState:
         state.music_volume = data.get("music_volume", config.MUSIC_BOT_VOLUME if config else 0.2)
         state.playlists = data.get("playlists", {})
         return state
-
