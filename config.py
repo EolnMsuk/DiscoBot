@@ -35,7 +35,7 @@ MUSIC_ENABLED = True
 
 # The local directory path where your music files are stored.
 # Set to None if you only plan to stream from URLs.
-MUSIC_LOCATION = "C:/Users/YourUser/Music" # Example path, change or set to None
+MUSIC_LOCATION = None # set path to (with quotes) "C:/Users/YourUser/Music" or None to disable
 
 # The default volume for the bot when it starts (from 0.0 to 1.0).
 MUSIC_BOT_VOLUME = 0.2
@@ -67,4 +67,5 @@ GLOBAL_HOTKEY_MVOLUP = ']'
 
 ENABLE_GLOBAL_MVOLDOWN = False
 GLOBAL_HOTKEY_MVOLDOWN = '['
+
 
