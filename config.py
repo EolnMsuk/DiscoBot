@@ -29,10 +29,6 @@ ADMIN_ROLE_NAME = ["Bot Admin", "DJ"]
 # The cooldown period (in seconds) for commands to prevent spam.
 COMMAND_COOLDOWN = 5
 
-# User IDs to exclude from command usage statistics.
-STATS_EXCLUDED_USERS = []
-
-
 # --- MUSIC SETTINGS ---
 # Set to False to disable all music features globally.
 MUSIC_ENABLED = True
@@ -71,3 +67,4 @@ GLOBAL_HOTKEY_MVOLUP = ']'
 
 ENABLE_GLOBAL_MVOLDOWN = False
 GLOBAL_HOTKEY_MVOLDOWN = '['
+
